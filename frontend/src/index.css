@@ -1,0 +1,256 @@
+@import "tailwindcss";
+
+:root {
+  /* ---- Base palette: near-black bento dashboard, dark-only ---- */
+  --background: oklch(0.06 0 0);
+  --foreground: oklch(0.97 0 0);
+  --card: oklch(0.12 0 0);
+  --card-foreground: oklch(0.97 0 0);
+  --border: oklch(0.22 0 0);
+  --muted: oklch(0.16 0 0);
+  --muted-foreground: oklch(0.65 0 0);
+  --primary: oklch(0.64 0.24 320);
+  --primary-foreground: oklch(0.99 0 0);
+  --accent: oklch(0.19 0.05 320);
+  --accent-foreground: oklch(0.9 0.06 320);
+  --destructive: oklch(0.62 0.22 25);
+  --destructive-foreground: oklch(0.99 0 0);
+  --ring: oklch(0.66 0.22 320);
+  --radius: 1.125rem;
+  --sidebar: oklch(0.08 0 0);
+  --sidebar-foreground: oklch(0.97 0 0);
+  --sidebar-border: oklch(0.2 0 0);
+
+  /* ---- Lifecycle stage colors: retuned as neon accents against near-black
+     (higher lightness/chroma than the values tuned for a light card bg) ---- */
+  --stage-intake: oklch(0.75 0.17 195);
+  --stage-brd-review: oklch(0.71 0.21 255);
+  --stage-planning: oklch(0.71 0.22 293);
+  --stage-development: oklch(0.71 0.23 333);
+  --stage-infosec: oklch(0.64 0.25 5);
+  --stage-uat: oklch(0.78 0.19 55);
+  --stage-bug-fix: oklch(0.68 0.24 25);
+  --stage-release: oklch(0.75 0.19 145);
+  --stage-post-production: oklch(0.82 0.17 95);
+
+  /* ---- Semantic module gradients — one per module, reused everywhere that
+     module appears (icon chips, accents). Kept as full gradient values so
+     they can be read directly via bg-[image:var(--grad-x)] or inline style. ---- */
+  --grad-brd: linear-gradient(135deg, #38bdf8, #6366f1);
+  --grad-planning: linear-gradient(135deg, #818cf8, #a855f7);
+  --grad-tasks: linear-gradient(135deg, #f472b6, #d946ef);
+  --grad-infosec: linear-gradient(135deg, #fb7185, #ef4444);
+  --grad-uat: linear-gradient(135deg, #2dd4bf, #22c55e);
+  --grad-bugs: linear-gradient(135deg, #fb923c, #f87171);
+  --grad-diagrams: linear-gradient(135deg, #22d3ee, #38bdf8);
+  --grad-primary: linear-gradient(135deg, #d946ef, #6366f1);
+
+  /* ---- Elevation: near-black bg means drop shadows barely read — kept for
+     surfaces that occasionally sit on a lighter tone, mostly a graceful
+     no-op here. Card separation comes from --card/--background lightness
+     contrast, not shadow. ---- */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 2px 8px rgba(0, 0, 0, 0.36);
+  --shadow-3: 0 8px 24px rgba(0, 0, 0, 0.44);
+  --shadow-4: 0 16px 48px rgba(0, 0, 0, 0.52);
+
+  /* ---- Radii ---- */
+  --radius-2xl: 28px;
+  --radius-3xl: 32px;
+  --radius-capsule: 999px;
+
+  /* ---- Motion: easing + duration tokens ---- */
+  --ease-apple-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-apple-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-snappy: cubic-bezier(0.4, 0, 0.2, 1);
+  --duration-instant: 100ms;
+  --duration-fast: 200ms;
+  --duration-base: 300ms;
+  --duration-slow: 450ms;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-border: var(--border);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-stage-intake: var(--stage-intake);
+  --color-stage-brd-review: var(--stage-brd-review);
+  --color-stage-planning: var(--stage-planning);
+  --color-stage-development: var(--stage-development);
+  --color-stage-infosec: var(--stage-infosec);
+  --color-stage-uat: var(--stage-uat);
+  --color-stage-bug-fix: var(--stage-bug-fix);
+  --color-stage-release: var(--stage-release);
+  --color-stage-post-production: var(--stage-post-production);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: var(--radius-2xl);
+  --radius-3xl: var(--radius-3xl);
+  --radius-capsule: var(--radius-capsule);
+  --shadow-1: var(--shadow-1);
+  --shadow-2: var(--shadow-2);
+  --shadow-3: var(--shadow-3);
+  --shadow-4: var(--shadow-4);
+  --ease-apple-out: var(--ease-apple-out);
+  --ease-apple-in-out: var(--ease-apple-in-out);
+  --ease-ios: var(--ease-ios);
+  --ease-snappy: var(--ease-snappy);
+  --duration-instant: var(--duration-instant);
+  --duration-fast: var(--duration-fast);
+  --duration-base: var(--duration-base);
+  --duration-slow: var(--duration-slow);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+/* Themed scrollbars — reference the same tokens as everything else. Applied
+   globally (not just html/body) since scrollable areas throughout the app —
+   the sidebar, kanban board's horizontal scroll, any overflow-y panel — are
+   plain divs with overflow-auto, not one central container. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 9999px;
+  transition: background-color 0.15s ease;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted-foreground);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Flat bento-card surface — a barely-there top highlight, the real
+   separation from the page comes from --card being distinctly lighter than
+   --background. No blur, no translucency: matches the reference's flat
+   dark cards, not glassmorphism. */
+.card-glow {
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.04),
+    0 0 0 0.5px rgba(0, 0, 0, 0.5);
+}
+
+/* ============================================================================
+   Flat chrome surfaces — header, sidebar, form fields, modal sheets. Same
+   class names as the previous "Liquid Glass" pass so every existing
+   consumer (AppShell, Sidebar, input/select/textarea, tabs, ModuleNav,
+   GenerateBoardWizard) keeps working unchanged; the rendering underneath is
+   now flat dark fill, no backdrop-filter — the reference has zero blur.
+   ============================================================================ */
+.glass {
+  background: var(--sidebar);
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+
+.glass-sidebar {
+  background: var(--sidebar);
+  box-shadow: inset -1px 0 0 var(--border);
+}
+
+.glass-thin {
+  background: var(--muted);
+}
+
+.glass-thick {
+  background: var(--card);
+  box-shadow: var(--shadow-4);
+}
+
+@media (prefers-contrast: more) {
+  .glass,
+  .glass-thin,
+  .glass-thick,
+  .glass-sidebar,
+  .card-glow {
+    box-shadow: 0 0 0 1px var(--border);
+  }
+}
+
+/* ============================================================================
+   Type scale — tracking tightens as size grows. Own namespace, not bridged
+   into Tailwind's tracking-*/leading-* keys (already used elsewhere with
+   default values).
+   ============================================================================ */
+.text-title-3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.014em;
+  line-height: 1.2;
+}
+
+.text-title-2 {
+  font-size: 1.375rem;
+  font-weight: 700;
+  letter-spacing: -0.014em;
+  line-height: 1.15;
+}
+
+.text-headline {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  letter-spacing: -0.006em;
+  line-height: 1.2;
+}
+
+/* Big bold stat numbers — bento dashboards lead with these. */
+.text-stat {
+  font-size: 2.25rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+/* Gradient-filled text, for hero stat numbers that want a module/primary
+   accent instead of flat foreground. Pair with an inline `backgroundImage`
+   set to one of the --grad-* tokens. */
+.gradient-text {
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

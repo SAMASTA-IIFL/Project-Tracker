@@ -1,0 +1,47 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# frontend (Vite/React)
+frontend/node_modules
+frontend/dist
+frontend/.vite
+
+# backend (FastAPI/Python)
+backend/.venv
+backend/__pycache__
+backend/**/__pycache__
+backend/*.egg-info
+backend/uvicorn*.log
+
+# local portable Postgres (machine-local, not part of the app)
+.pgsql-portable/
+
+# testing / coverage
+coverage
+.pytest_cache
+
+# misc
+.DS_Store
+*.pem
+
+# env files (machine-local secrets/config) — but keep the committed examples
+.env*
+!.env.example
+!**/.env.example
+!.env.users.example
+!**/.env.users.example
+
+# local file storage (STORAGE_PROVIDER=local-disk) — the actual runtime dir is
+# backend/.uploads (storage_local_dir is relative to backend/), not repo-root
+/.uploads
+backend/.uploads
+**/.uploads
+
+# machine-local corporate proxy certs
+/.certs
+
+# local tool config/session state — machine- and session-specific, not project code
+.claude/
+
+# stray dev-server log files
+frontend/vite.log
+frontend/*.log
