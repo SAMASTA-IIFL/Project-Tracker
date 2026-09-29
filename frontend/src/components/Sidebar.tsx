@@ -1,5 +1,5 @@
 import { useNavigate } from "react-router-dom";
-import { Home, Plus } from "lucide-react";
+import { Home, KeyRound, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 function SidebarAction({
@@ -43,6 +43,7 @@ export function Sidebar() {
           shortcut="⌘N"
           onClick={() => navigate("/products/new")}
         />
+        <SidebarAction icon={<KeyRound className="h-4 w-4" />} label="Vault" onClick={() => navigate("/vault")} />
       </div>
 
       <div className="flex flex-col gap-3">

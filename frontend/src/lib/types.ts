@@ -527,3 +527,62 @@ export type BoardGenerateRequest = {
 export type BoardGenerateResponse = {
   graph_json: ArchGraph;
 };
+
+// --- Secrets Vault ---
+//
+// The backend only ever sees/returns opaque base64 strings for ciphertext,
+// iv, and wrapped keys — all real decryption happens client-side via
+// lib/vaultCrypto.ts. See backend/app/routers/vault.py.
+
+export type VaultUserSearchResult = {
+  id: string;
+  name: string | null;
+  email: string;
+  // null => this user hasn't set up their vault yet; they can't be granted
+  // access until they have (no public key to wrap a DEK for).
+  vault_public_key: string | null;
+};
+
+export type VaultSecretAccess = "OWNER" | "GRANTED";
+
+export type VaultSecret = {
+  id: string;
+  owner: User;
+  product_id: string | null;
+  name: string;
+  description: string | null;
+  my_access: VaultSecretAccess;
+  created_at: string;
+  updated_at: string;
+};
+
+export type VaultSecretReveal = {
+  ciphertext: string;
+  iv: string;
+  wrapped_key: string;
+};
+
+export type VaultGrant = {
+  id: string;
+  user: User;
+  granted_by: User;
+  created_at: string;
+};
+
+export type VaultAuditAction = "CREATED" | "GRANTED" | "REVOKED" | "VIEWED" | "ADMIN_BREAKGLASS_VIEWED";
+
+export type VaultAuditEntry = {
+  id: string;
+  action: VaultAuditAction;
+  actor: User;
+  created_at: string;
+  metadata: Record<string, unknown> | null;
+};
+
+export const VAULT_AUDIT_LABELS: Record<VaultAuditAction, string> = {
+  CREATED: "Created",
+  GRANTED: "Access granted",
+  REVOKED: "Access revoked",
+  VIEWED: "Viewed",
+  ADMIN_BREAKGLASS_VIEWED: "Admin breakglass view",
+};

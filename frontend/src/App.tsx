@@ -13,6 +13,7 @@ import { InfosecPage } from "@/pages/Infosec";
 import { UatPage } from "@/pages/Uat";
 import { BugsPage } from "@/pages/Bugs";
 import { DiagramsPage } from "@/pages/Diagrams";
+import { VaultPage } from "@/pages/Vault";
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
           <Route path="/sign-in" element={<SignInPage />} />
           <Route element={<ProtectedRoute />}>
             <Route path="/" element={<DashboardPage />} />
+            <Route path="/vault" element={<VaultPage />} />
             <Route path="/products/new" element={<NewProductPage />} />
             <Route path="/products/:id" element={<ProductDetailPage />} />
             <Route path="/products/:id/brd" element={<BRDPage />} />
