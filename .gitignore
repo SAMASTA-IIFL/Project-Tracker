@@ -27,8 +27,15 @@ coverage
 .env*
 !.env.example
 !**/.env.example
-!.env.users.example
-!**/.env.users.example
+
+# Firebase Admin SDK service-account key — never commit this. The negations
+# below matter: *firebase*.json also matches firebase.json (the CLI config
+# holding the security-rules paths), which does belong in git.
+*firebase*.json
+!firebase.json
+!**/package.json
+!**/package-lock.json
+!**/tsconfig*.json
 
 # local file storage (STORAGE_PROVIDER=local-disk) — the actual runtime dir is
 # backend/.uploads (storage_local_dir is relative to backend/), not repo-root

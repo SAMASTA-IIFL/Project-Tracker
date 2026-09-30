@@ -5,11 +5,9 @@ import os
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from sqlmodel import Session
 
 from app.config import settings
-from app.database import engine
-from app.models import VaultRecoveryKey
+from app.models import VaultRecoveryKey, vault_recovery_key_db
 
 logger = logging.getLogger(__name__)
 
@@ -45,48 +43,46 @@ def ensure_vault_recovery_key() -> None:
         logger.error("VAULT_RECOVERY_MASTER_KEY must decode to exactly 32 bytes — breakglass disabled")
         return
 
-    with Session(engine) as session:
-        if session.get(VaultRecoveryKey, _RECOVERY_KEY_ID):
-            return
+    if vault_recovery_key_db.get(_RECOVERY_KEY_ID):
+        return
 
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        public_key = private_key.public_key()
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
 
-        public_bytes = public_key.public_bytes(
-            encoding=serialization.Encoding.DER,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    public_bytes = public_key.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    private_bytes = private_key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+    aesgcm = AESGCM(master_key)
+    iv = os.urandom(12)
+    ciphertext = aesgcm.encrypt(iv, private_bytes, None)
+
+    vault_recovery_key_db.set(
+        VaultRecoveryKey(
+            id=_RECOVERY_KEY_ID,
+            public_key=base64.b64encode(public_bytes).decode(),
+            encrypted_private_key=f"{base64.b64encode(iv).decode()}:{base64.b64encode(ciphertext).decode()}",
         )
-        private_bytes = private_key.private_bytes(
-            encoding=serialization.Encoding.DER,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-
-        aesgcm = AESGCM(master_key)
-        iv = os.urandom(12)
-        ciphertext = aesgcm.encrypt(iv, private_bytes, None)
-
-        session.add(
-            VaultRecoveryKey(
-                id=_RECOVERY_KEY_ID,
-                public_key=base64.b64encode(public_bytes).decode(),
-                encrypted_private_key=f"{base64.b64encode(iv).decode()}:{base64.b64encode(ciphertext).decode()}",
-            )
-        )
-        session.commit()
-        logger.info("Generated Secrets Vault admin-breakglass recovery keypair")
+    )
+    logger.info("Generated Secrets Vault admin-breakglass recovery keypair")
 
 
-def get_recovery_public_key(session: Session) -> str | None:
-    row = session.get(VaultRecoveryKey, _RECOVERY_KEY_ID)
+def get_recovery_public_key() -> str | None:
+    row = vault_recovery_key_db.get(_RECOVERY_KEY_ID)
     return row.public_key if row else None
 
 
-def _decrypt_recovery_private_key(session: Session) -> rsa.RSAPrivateKey:
+def _decrypt_recovery_private_key() -> rsa.RSAPrivateKey:
     if not settings.vault_recovery_master_key:
         raise RuntimeError("Admin breakglass is not configured (VAULT_RECOVERY_MASTER_KEY unset)")
 
-    row = session.get(VaultRecoveryKey, _RECOVERY_KEY_ID)
+    row = vault_recovery_key_db.get(_RECOVERY_KEY_ID)
     if not row:
         raise RuntimeError("No vault recovery key has been generated yet")
 
@@ -96,12 +92,12 @@ def _decrypt_recovery_private_key(session: Session) -> rsa.RSAPrivateKey:
     return serialization.load_der_private_key(private_bytes, password=None)
 
 
-def breakglass_decrypt_secret_value(session: Session, *, recovery_wrapped_key: str, iv: str, ciphertext: str) -> str:
+def breakglass_decrypt_secret_value(*, recovery_wrapped_key: str, iv: str, ciphertext: str) -> str:
     """Unwraps a secret's DEK with the recovery private key and decrypts its
     value. Called only from the admin-only POST .../breakglass-reveal
     endpoint in app/routers/vault.py -- the sole place in this codebase
     where a vault secret's plaintext is ever produced server-side."""
-    private_key = _decrypt_recovery_private_key(session)
+    private_key = _decrypt_recovery_private_key()
     dek = private_key.decrypt(
         base64.b64decode(recovery_wrapped_key),
         padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None),

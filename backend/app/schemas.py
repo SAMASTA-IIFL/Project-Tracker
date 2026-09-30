@@ -25,32 +25,20 @@ from app.models import (
 )
 
 
-class DevLoginRequest(BaseModel):
-    email: EmailStr
-    password: str
-    name: str | None = None
-
-
 class UserRead(BaseModel):
     id: str
     name: str | None
     email: str
 
 
-# Only for "who am I" responses (/api/auth/me, dev-login) — global_role is
-# meaningful for gating the signed-in user's own UI, not for describing other
-# users (comment authors, assignees, ...), so it stays off the shared UserRead.
+# Only for "who am I" responses (/api/auth/me) — global_role is meaningful
+# for gating the signed-in user's own UI, not for describing other users
+# (comment authors, assignees, ...), so it stays off the shared UserRead.
 class MeRead(BaseModel):
     id: str
     name: str | None
     email: str
     global_role: GlobalRole
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    user: MeRead
 
 
 class ProductCreate(BaseModel):

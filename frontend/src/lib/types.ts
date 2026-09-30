@@ -2,9 +2,9 @@ export type User = {
   id: string;
   name: string | null;
   email: string;
-  // Only populated on the signed-in user's own record (/api/auth/me,
-  // dev-login) — undefined when this User appears as e.g. a comment author
-  // or task assignee.
+  // Only populated on the signed-in user's own record (/api/auth/me) —
+  // undefined when this User appears as e.g. a comment author or task
+  // assignee.
   global_role?: "ADMIN" | "MEMBER";
 };
 

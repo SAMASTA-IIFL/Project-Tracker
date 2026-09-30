@@ -1,39 +1,62 @@
-from datetime import datetime, timedelta
-
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
-from sqlmodel import Session
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from firebase_admin import auth as firebase_auth
 
 from app.config import settings
-from app.database import get_session
-from app.models import User
+from app.models import GlobalRole, User, users_db
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/dev-login", auto_error=False)
+# No locally-issued JWT anymore — the frontend gets an ID token straight from
+# Firebase after Google Sign-In (see frontend/src/lib/firebase.ts) and sends
+# that as the Bearer token on every request. This just verifies it.
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
-def create_access_token(user_id: str) -> str:
-    expire = datetime.utcnow() + timedelta(minutes=settings.jwt_expire_minutes)
-    payload = {"sub": user_id, "exp": expire}
-    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+def _upsert_user(uid: str, email: str, name: str | None) -> User:
+    is_admin_email = email.lower() in settings.admin_emails()
+    global_role = GlobalRole.ADMIN if is_admin_email else GlobalRole.MEMBER
+
+    user = users_db.first(firebase_uid=uid)
+    if not user:
+        # No user is tied to this Firebase account yet — but a PM may have
+        # already pre-provisioned a User row for this email via "Add member"
+        # (app/routers/products.py) before this person ever signed in. Claim
+        # that placeholder instead of creating a second, disconnected User —
+        # otherwise their existing ProductMember/TaskAssignee rows (which
+        # point at the placeholder's id) would silently stop being "them".
+        user = users_db.first(email=email)
+
+    if not user:
+        return users_db.set(User(email=email, name=name or email.split("@")[0], global_role=global_role, firebase_uid=uid))
+
+    changed = False
+    if user.firebase_uid != uid:
+        user.firebase_uid = uid
+        changed = True
+    if name and user.name != name:
+        user.name = name
+        changed = True
+    if user.global_role != global_role:
+        # settings.firebase_admin_emails is the source of truth for role —
+        # keep the Firestore record in sync if it's edited after the user's
+        # first sign-in (mirrors the pre-Firebase dev-credentials behavior).
+        user.global_role = global_role
+        changed = True
+    return users_db.set(user) if changed else user
 
 
 def get_current_user(
-    token: str | None = Depends(oauth2_scheme),
-    session: Session = Depends(get_session),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> User:
     unauthorized = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    if not token:
+    if not credentials:
         raise unauthorized
     try:
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-        user_id = payload.get("sub")
-        if not user_id:
-            raise unauthorized
-    except JWTError:
+        decoded = firebase_auth.verify_id_token(credentials.credentials)
+    except Exception:
         raise unauthorized
 
-    user = session.get(User, user_id)
-    if not user:
+    email = decoded.get("email")
+    if not email:
         raise unauthorized
-    return user
+
+    return _upsert_user(decoded["uid"], email, decoded.get("name"))

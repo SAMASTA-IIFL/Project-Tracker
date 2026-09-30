@@ -6,14 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
-from app.database import init_db
 from app.routers import activity, auth, brd, bugs, diagrams, infosec, products, tasks, uat, users, vault, workspace
 from app.vault_recovery import ensure_vault_recovery_key
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    # Firestore is schemaless — no create_all()/migrations to run at startup.
     ensure_vault_recovery_key()
     Path(settings.storage_local_dir).mkdir(parents=True, exist_ok=True)
     yield

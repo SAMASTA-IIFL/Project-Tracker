@@ -1,14 +1,10 @@
-from sqlmodel import Session
-
-from app.models import ActivityEvent
+from app.models import ActivityEvent, activity_events_db
 
 
 # Every domain action that matters to a product's story should call this.
-# It is the single source for both the product activity timeline (Phase 2)
-# and per-user notifications (Phase 2) — logged from day one so later
-# phases only need to add readers, not writers.
+# It is the single source for both the product activity timeline and
+# per-user notifications.
 def log_activity(
-    session: Session,
     *,
     product_id: str,
     actor_id: str,
@@ -25,7 +21,4 @@ def log_activity(
         ref_id=ref_id,
         metadata_=metadata,
     )
-    session.add(event)
-    session.commit()
-    session.refresh(event)
-    return event
+    return activity_events_db.set(event)

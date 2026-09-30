@@ -2,8 +2,9 @@ import uuid
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import UniqueConstraint
-from sqlmodel import JSON, Column, Field, Relationship, SQLModel, Text
+from pydantic import BaseModel, Field
+
+from app.firestore_db import Collection
 
 
 def new_id() -> str:
@@ -177,377 +178,460 @@ class BudgetPeriod(str, Enum):
 
 
 # --- Core models ---
+#
+# Every class below is a Firestore document shape (plain Pydantic, no ORM).
+# `id` is always the Firestore document id — Collection.set() writes every
+# other field and Collection._from_doc() re-attaches `id` from doc.id on
+# read (see app/firestore_db.py). What used to be `Field(foreign_key=...)`
+# is now just a plain str field: Firestore has no foreign keys, referential
+# integrity here is enforced the same way it always effectively was at the
+# API layer (each router 404s if the referenced id doesn't resolve).
 
-class User(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
+class User(BaseModel):
+    id: str = Field(default_factory=new_id)
     name: str | None = None
-    email: str = Field(unique=True, index=True)
-    global_role: GlobalRole = Field(default=GlobalRole.MEMBER)
+    email: str
+    global_role: GlobalRole = GlobalRole.MEMBER
     created_at: datetime = Field(default_factory=now)
+
+    # Firebase Auth's uid — kept as a separate lookup field rather than as
+    # `id` itself so that `id` (referenced everywhere else: ProductMember.
+    # user_id, TaskAssignee.user_id, ...) stays stable even for a user who
+    # was pre-provisioned by email (app/routers/products.py::add_member)
+    # before they ever signed in. None until they actually sign in once;
+    # see app/security.py::_upsert_user for how a placeholder gets "claimed".
+    firebase_uid: str | None = None
 
     # Secrets Vault (see app/routers/vault.py) — an RSA-OAEP-2048 keypair set
     # once at vault setup. The private key never exists in plaintext outside
     # the browser: vault_wrapped_private_key is a JSON blob {salt, iv,
     # ciphertext, iterations} produced by wrapping the PKCS8 private key with
-    # a PBKDF2-derived key from the user's login password. Both columns are
-    # nullable -- most users may never set up a vault.
-    vault_public_key: str | None = Field(default=None, sa_column=Column(Text))
-    vault_wrapped_private_key: str | None = Field(default=None, sa_column=Column(Text))
+    # a PBKDF2-derived key from the user's *vault* password (independent of
+    # how they sign in — see Vault.tsx). Both fields are nullable -- most
+    # users may never set up a vault.
+    vault_public_key: str | None = None
+    vault_wrapped_private_key: str | None = None
 
-    memberships: list["ProductMember"] = Relationship(back_populates="user")
+
+users_db = Collection("users", User)
 
 
-class Product(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
+class Product(BaseModel):
+    id: str = Field(default_factory=new_id)
     name: str
-    description: str | None = Field(default=None, sa_column=Column(Text))
-    status: str = Field(default="ACTIVE")
-    current_stage: LifecycleStage = Field(default=LifecycleStage.INTAKE)
-    # Optional overall budget ceiling for the Planning workspace's Budget tab
-    # progress bar. Added to an existing table -> needs the ADD COLUMN
-    # IF NOT EXISTS migration in database.py (see _sync_product_budget_cap_column).
+    description: str | None = None
+    status: str = "ACTIVE"
+    current_stage: LifecycleStage = LifecycleStage.INTAKE
     budget_cap: float | None = None
-    owner_id: str = Field(foreign_key="user.id")
+    owner_id: str
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
 
-    members: list["ProductMember"] = Relationship(back_populates="product")
+
+products_db = Collection("products", Product)
 
 
-class ProductMember(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    product_id: str = Field(foreign_key="product.id", index=True)
-    user_id: str = Field(foreign_key="user.id", index=True)
+class ProductMember(BaseModel):
+    id: str = Field(default_factory=new_id)
+    product_id: str
+    user_id: str
     role: ProductRole
     created_at: datetime = Field(default_factory=now)
 
-    product: Product = Relationship(back_populates="members")
-    user: User = Relationship(back_populates="memberships")
+
+product_members_db = Collection("product_members", ProductMember)
 
 
-class BRD(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    product_id: str = Field(foreign_key="product.id", index=True)
+class BRD(BaseModel):
+    id: str = Field(default_factory=new_id)
+    product_id: str
     title: str
-    version: int = Field(default=1)
-    status: BRDStatus = Field(default=BRDStatus.DRAFT)
-    content: str | None = Field(default=None, sa_column=Column(Text))
+    version: int = 1
+    status: BRDStatus = BRDStatus.DRAFT
+    content: str | None = None
     file_url: str | None = None
-    created_by_id: str = Field(foreign_key="user.id")
+    created_by_id: str
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
 
 
-class BRDComment(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    brd_id: str = Field(foreign_key="brd.id", index=True)
-    author_id: str = Field(foreign_key="user.id")
+brds_db = Collection("brds", BRD)
+
+
+class BRDComment(BaseModel):
+    id: str = Field(default_factory=new_id)
+    brd_id: str
+    author_id: str
     section_anchor: str | None = None
-    text: str = Field(sa_column=Column(Text))
-    resolved: bool = Field(default=False)
+    text: str
+    resolved: bool = False
     created_at: datetime = Field(default_factory=now)
 
 
-class Task(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    product_id: str = Field(foreign_key="product.id", index=True)
-    brd_id: str | None = Field(default=None, foreign_key="brd.id")
+brd_comments_db = Collection("brd_comments", BRDComment)
+
+
+class Task(BaseModel):
+    id: str = Field(default_factory=new_id)
+    product_id: str
+    brd_id: str | None = None
     title: str
-    description: str | None = Field(default=None, sa_column=Column(Text))
-    status: TaskStatus = Field(default=TaskStatus.TODO)
-    priority: Priority = Field(default=Priority.MEDIUM)
+    description: str | None = None
+    status: TaskStatus = TaskStatus.TODO
+    priority: Priority = Priority.MEDIUM
     due_date: datetime | None = None
     # Which lifecycle stage this task belongs to (Development, Infosec, UAT, ...).
     # Drives the reopen/auto-advance rules in app/lifecycle.py.
-    stage: LifecycleStage = Field(default=LifecycleStage.DEVELOPMENT)
+    stage: LifecycleStage = LifecycleStage.DEVELOPMENT
     # Which BRD section this task traces back to (same free-text anchor values
     # BRDComment.section_anchor uses: objective/scope/requirements/acceptance_criteria).
-    brd_section: str | None = Field(default=None, sa_column=Column("brd_section", Text))
+    brd_section: str | None = None
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
 
 
-# Many-to-many — a task can have several assignees. The Postgres `task.assignee_id`
-# column from before this still physically exists (create_all() never drops
-# columns) but is no longer read/written by the ORM; database.py's
-# _sync_task_assignees_backfill() carries its data forward into this table once.
-class TaskAssignee(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    task_id: str = Field(foreign_key="task.id", index=True)
-    user_id: str = Field(foreign_key="user.id", index=True)
+tasks_db = Collection("tasks", Task)
+
+
+# Many-to-many — a task can have several assignees.
+class TaskAssignee(BaseModel):
+    id: str = Field(default_factory=new_id)
+    task_id: str
+    user_id: str
     created_at: datetime = Field(default_factory=now)
 
 
-class ProgressUpdate(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    task_id: str = Field(foreign_key="task.id", index=True)
-    author_id: str = Field(foreign_key="user.id")
-    note: str = Field(sa_column=Column(Text))
+task_assignees_db = Collection("task_assignees", TaskAssignee)
+
+
+class ProgressUpdate(BaseModel):
+    id: str = Field(default_factory=new_id)
+    task_id: str
+    author_id: str
+    note: str
     percent_complete: int | None = None
     created_at: datetime = Field(default_factory=now)
 
 
-class ArchitectureDiagram(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    product_id: str = Field(foreign_key="product.id", index=True)
+progress_updates_db = Collection("progress_updates", ProgressUpdate)
+
+
+class ArchitectureDiagram(BaseModel):
+    id: str = Field(default_factory=new_id)
+    product_id: str
     title: str
-    version: int = Field(default=1)
+    version: int = 1
     file_url: str
-    description: str | None = Field(default=None, sa_column=Column(Text))
-    uploaded_by_id: str = Field(foreign_key="user.id")
+    description: str | None = None
+    uploaded_by_id: str
     created_at: datetime = Field(default_factory=now)
 
 
-class DiagramComment(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    diagram_id: str = Field(foreign_key="architecturediagram.id", index=True)
-    author_id: str = Field(foreign_key="user.id")
-    text: str = Field(sa_column=Column(Text))
+architecture_diagrams_db = Collection("architecture_diagrams", ArchitectureDiagram)
+
+
+class DiagramComment(BaseModel):
+    id: str = Field(default_factory=new_id)
+    diagram_id: str
+    author_id: str
+    text: str
     created_at: datetime = Field(default_factory=now)
 
 
-class UATCycleModel(SQLModel, table=True):
-    __tablename__ = "uatcycle"
-    id: str = Field(default_factory=new_id, primary_key=True)
-    product_id: str = Field(foreign_key="product.id", index=True)
+diagram_comments_db = Collection("diagram_comments", DiagramComment)
+
+
+class UATCycleModel(BaseModel):
+    id: str = Field(default_factory=new_id)
+    product_id: str
     version: str
-    status: UATCycleStatus = Field(default=UATCycleStatus.OPEN)
+    status: UATCycleStatus = UATCycleStatus.OPEN
     started_at: datetime = Field(default_factory=now)
     closed_at: datetime | None = None
 
 
-class UATFeedback(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    uat_cycle_id: str = Field(foreign_key="uatcycle.id", index=True)
-    task_id: str | None = Field(default=None, foreign_key="task.id")
-    author_id: str = Field(foreign_key="user.id")
+uat_cycles_db = Collection("uat_cycles", UATCycleModel)
+
+
+class UATFeedback(BaseModel):
+    id: str = Field(default_factory=new_id)
+    uat_cycle_id: str
+    task_id: str | None = None
+    author_id: str
     criterion: str
     # A mutable per-criterion item (checklist-style, like InfosecChecklistItem)
     # rather than an append-only event log — PENDING is the untested starting
     # state, and result/notes/file_url/author_id are updated in place as the
-    # criterion is tested. See the UAT plan's "interpretation calls" section.
-    result: UATResult = Field(default=UATResult.PENDING)
-    notes: str | None = Field(default=None, sa_column=Column(Text))
+    # criterion is tested.
+    result: UATResult = UATResult.PENDING
+    notes: str | None = None
     file_url: str | None = None
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
 
 
-class BugReport(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    product_id: str = Field(foreign_key="product.id", index=True)
+uat_feedback_db = Collection("uat_feedback", UATFeedback)
+
+
+class BugReport(BaseModel):
+    id: str = Field(default_factory=new_id)
+    product_id: str
     title: str
-    description: str = Field(sa_column=Column(Text))
-    severity: BugSeverity = Field(default=BugSeverity.MEDIUM)
-    status: BugStatus = Field(default=BugStatus.OPEN)
-    source: BugSource = Field(default=BugSource.INTERNAL)
-    reported_by_id: str = Field(foreign_key="user.id")
-    assignee_id: str | None = Field(default=None, foreign_key="user.id")
-    linked_task_id: str | None = Field(default=None, foreign_key="task.id")
+    description: str
+    severity: BugSeverity = BugSeverity.MEDIUM
+    status: BugStatus = BugStatus.OPEN
+    source: BugSource = BugSource.INTERNAL
+    reported_by_id: str
+    assignee_id: str | None = None
+    linked_task_id: str | None = None
     # Set when this bug was filed via UAT's one-click Fail -> Bug conversion —
     # lets the UAT page show "already converted" and link back to the bug.
-    uat_feedback_id: str | None = Field(default=None, foreign_key="uatfeedback.id")
-    file_url: str | None = Field(default=None)
+    uat_feedback_id: str | None = None
+    file_url: str | None = None
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
 
 
-class BugComment(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    bug_id: str = Field(foreign_key="bugreport.id", index=True)
-    author_id: str = Field(foreign_key="user.id")
-    text: str = Field(sa_column=Column(Text))
+bug_reports_db = Collection("bug_reports", BugReport)
+
+
+class BugComment(BaseModel):
+    id: str = Field(default_factory=new_id)
+    bug_id: str
+    author_id: str
+    text: str
     created_at: datetime = Field(default_factory=now)
 
 
-class PostProductionFeedback(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    product_id: str = Field(foreign_key="product.id", index=True)
-    author_id: str = Field(foreign_key="user.id")
-    type: FeedbackType = Field(default=FeedbackType.GENERAL)
-    content: str = Field(sa_column=Column(Text))
+bug_comments_db = Collection("bug_comments", BugComment)
+
+
+class PostProductionFeedback(BaseModel):
+    id: str = Field(default_factory=new_id)
+    product_id: str
+    author_id: str
+    type: FeedbackType = FeedbackType.GENERAL
+    content: str
     ai_category: str | None = None
     created_at: datetime = Field(default_factory=now)
 
 
-class ActivityEvent(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    product_id: str = Field(foreign_key="product.id", index=True)
-    actor_id: str = Field(foreign_key="user.id")
+post_production_feedback_db = Collection("post_production_feedback", PostProductionFeedback)
+
+
+class ActivityEvent(BaseModel):
+    id: str = Field(default_factory=new_id)
+    product_id: str
+    actor_id: str
     event_type: str
     ref_type: str
     ref_id: str
-    metadata_: dict | None = Field(default=None, sa_column=Column("metadata", JSON))
-    created_at: datetime = Field(default_factory=now, index=True)
-
-
-class Notification(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    user_id: str = Field(foreign_key="user.id", index=True)
-    event_id: str = Field(foreign_key="activityevent.id")
-    read: bool = Field(default=False)
+    metadata_: dict | None = None
     created_at: datetime = Field(default_factory=now)
 
 
-class Attachment(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    owner_type: str = Field(index=True)
-    owner_id: str = Field(index=True)
+activity_events_db = Collection("activity_events", ActivityEvent)
+
+
+class Notification(BaseModel):
+    id: str = Field(default_factory=new_id)
+    user_id: str
+    event_id: str
+    read: bool = False
+    created_at: datetime = Field(default_factory=now)
+
+
+notifications_db = Collection("notifications", Notification)
+
+
+class Attachment(BaseModel):
+    id: str = Field(default_factory=new_id)
+    owner_type: str
+    owner_id: str
     file_url: str
     file_type: str | None = None
-    uploaded_by_id: str = Field(foreign_key="user.id")
+    uploaded_by_id: str
     created_at: datetime = Field(default_factory=now)
+
+
+attachments_db = Collection("attachments", Attachment)
 
 
 # --- Infosec checklist bank + per-product checklist/VAPT tracking ---
 
-class InfosecChecklistTemplate(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
+class InfosecChecklistTemplate(BaseModel):
+    id: str = Field(default_factory=new_id)
     name: str
-    description: str | None = Field(default=None, sa_column=Column(Text))
-    created_by_id: str = Field(foreign_key="user.id")
+    description: str | None = None
+    created_by_id: str
     created_at: datetime = Field(default_factory=now)
 
 
-class InfosecChecklistTemplateItem(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    template_id: str = Field(foreign_key="infosecchecklisttemplate.id", index=True)
+infosec_checklist_templates_db = Collection("infosec_checklist_templates", InfosecChecklistTemplate)
+
+
+class InfosecChecklistTemplateItem(BaseModel):
+    id: str = Field(default_factory=new_id)
+    template_id: str
     title: str
-    description: str | None = Field(default=None, sa_column=Column(Text))
+    description: str | None = None
     category: str | None = None
-    order: int = Field(default=0)
+    order: int = 0
     created_at: datetime = Field(default_factory=now)
 
 
-class InfosecVAPTReport(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    product_id: str = Field(foreign_key="product.id", index=True)
-    round: int = Field(default=1)
+infosec_checklist_template_items_db = Collection("infosec_checklist_template_items", InfosecChecklistTemplateItem)
+
+
+class InfosecVAPTReport(BaseModel):
+    id: str = Field(default_factory=new_id)
+    product_id: str
+    round: int = 1
     file_url: str
-    notes: str | None = Field(default=None, sa_column=Column(Text))
-    uploaded_by_id: str = Field(foreign_key="user.id")
+    notes: str | None = None
+    uploaded_by_id: str
     uploaded_at: datetime = Field(default_factory=now)
 
 
-class InfosecChecklistItem(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    product_id: str = Field(foreign_key="product.id", index=True)
+infosec_vapt_reports_db = Collection("infosec_vapt_reports", InfosecVAPTReport)
+
+
+class InfosecChecklistItem(BaseModel):
+    id: str = Field(default_factory=new_id)
+    product_id: str
     # Stage 1 = internal check (from a template and/or ad-hoc); Stage 2 = VAPT
     # findings. `round` only matters within stage 2 — each VAPT retest is its
     # own round so history isn't lost when items are re-added as "still open".
-    stage: int = Field(default=1)
-    round: int = Field(default=1)
-    source: InfosecItemSource = Field(default=InfosecItemSource.MANUAL)
-    template_item_id: str | None = Field(default=None, foreign_key="infosecchecklisttemplateitem.id")
-    vapt_report_id: str | None = Field(default=None, foreign_key="infosecvaptreport.id")
+    stage: int = 1
+    round: int = 1
+    source: InfosecItemSource = InfosecItemSource.MANUAL
+    template_item_id: str | None = None
+    vapt_report_id: str | None = None
     title: str
-    description: str | None = Field(default=None, sa_column=Column(Text))
+    description: str | None = None
     category: str | None = None
-    status: InfosecItemStatus = Field(default=InfosecItemStatus.OPEN)
-    assignee_id: str | None = Field(default=None, foreign_key="user.id")
-    created_by_id: str = Field(foreign_key="user.id")
+    status: InfosecItemStatus = InfosecItemStatus.OPEN
+    assignee_id: str | None = None
+    created_by_id: str
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
 
 
-class InfosecChecklistComment(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    item_id: str = Field(foreign_key="infosecchecklistitem.id", index=True)
-    author_id: str = Field(foreign_key="user.id")
-    text: str = Field(sa_column=Column(Text))
+infosec_checklist_items_db = Collection("infosec_checklist_items", InfosecChecklistItem)
+
+
+class InfosecChecklistComment(BaseModel):
+    id: str = Field(default_factory=new_id)
+    item_id: str
+    author_id: str
+    text: str
     created_at: datetime = Field(default_factory=now)
+
+
+infosec_checklist_comments_db = Collection("infosec_checklist_comments", InfosecChecklistComment)
 
 
 # --- Planning workspace: repos, tech stack, hosting, budget, architecture board ---
-#
-# Unlike most of this app's entities (Task/BRD/Diagram, append-only by
-# convention), these are plain reference-data records with no review/audit
-# lifecycle attached -- they support real edit + delete via the API so a
-# decommissioned hosting env or a mis-entered budget line doesn't sit
-# stuck forever. Architecture board *version snapshots* stay append-only,
-# same as ArchitectureDiagram's version history.
 
-class ProjectRepository(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    product_id: str = Field(foreign_key="product.id", index=True)
+class ProjectRepository(BaseModel):
+    id: str = Field(default_factory=new_id)
+    product_id: str
     label: str
-    provider: RepoProvider = Field(default=RepoProvider.GITHUB)
+    provider: RepoProvider = RepoProvider.GITHUB
     url: str
     default_branch: str | None = None
-    notes: str | None = Field(default=None, sa_column=Column(Text))
-    order: int = Field(default=0)
-    created_by_id: str = Field(foreign_key="user.id")
+    notes: str | None = None
+    order: int = 0
+    created_by_id: str
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
 
 
-class TechStackItem(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    product_id: str = Field(foreign_key="product.id", index=True)
+project_repositories_db = Collection("project_repositories", ProjectRepository)
+
+
+class TechStackItem(BaseModel):
+    id: str = Field(default_factory=new_id)
+    product_id: str
     category: TechStackCategory
     name: str
     version: str | None = None
     url: str | None = None
-    notes: str | None = Field(default=None, sa_column=Column(Text))
-    order: int = Field(default=0)
-    created_by_id: str = Field(foreign_key="user.id")
+    notes: str | None = None
+    order: int = 0
+    created_by_id: str
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
 
 
-class HostingEnvironment(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    product_id: str = Field(foreign_key="product.id", index=True)
+tech_stack_items_db = Collection("tech_stack_items", TechStackItem)
+
+
+class HostingEnvironment(BaseModel):
+    id: str = Field(default_factory=new_id)
+    product_id: str
     name: str
-    provider: HostingProvider = Field(default=HostingProvider.OTHER)
+    provider: HostingProvider = HostingProvider.OTHER
     url: str | None = None
     region: str | None = None
-    notes: str | None = Field(default=None, sa_column=Column(Text))
-    order: int = Field(default=0)
-    created_by_id: str = Field(foreign_key="user.id")
+    notes: str | None = None
+    order: int = 0
+    created_by_id: str
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
 
 
-class BudgetLineItem(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    product_id: str = Field(foreign_key="product.id", index=True)
+hosting_environments_db = Collection("hosting_environments", HostingEnvironment)
+
+
+class BudgetLineItem(BaseModel):
+    id: str = Field(default_factory=new_id)
+    product_id: str
     category: BudgetCategory
     name: str
     planned_amount: float
-    actual_amount: float = Field(default=0)
-    currency: str = Field(default="USD")
-    period: BudgetPeriod = Field(default=BudgetPeriod.ONE_TIME)
-    notes: str | None = Field(default=None, sa_column=Column(Text))
-    created_by_id: str = Field(foreign_key="user.id")
+    actual_amount: float = 0
+    currency: str = "USD"
+    period: BudgetPeriod = BudgetPeriod.ONE_TIME
+    notes: str | None = None
+    created_by_id: str
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
+
+
+budget_line_items_db = Collection("budget_line_items", BudgetLineItem)
 
 
 # One current, editable board per product (autosaved via PATCH). Explicit
 # "Save version" snapshots into ArchitectureBoardVersion.
-class ArchitectureBoard(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    product_id: str = Field(foreign_key="product.id", unique=True, index=True)
-    graph_json: dict = Field(default_factory=lambda: {"nodes": [], "edges": []}, sa_column=Column(JSON))
-    updated_by_id: str = Field(foreign_key="user.id")
+class ArchitectureBoard(BaseModel):
+    id: str = Field(default_factory=new_id)
+    product_id: str
+    graph_json: dict = Field(default_factory=lambda: {"nodes": [], "edges": []})
+    updated_by_id: str
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
 
 
-class ArchitectureBoardVersion(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    product_id: str = Field(foreign_key="product.id", index=True)
+architecture_boards_db = Collection("architecture_boards", ArchitectureBoard)
+
+
+class ArchitectureBoardVersion(BaseModel):
+    id: str = Field(default_factory=new_id)
+    product_id: str
     version: int
-    graph_json: dict = Field(sa_column=Column(JSON))
+    graph_json: dict
     label: str | None = None
-    saved_by_id: str = Field(foreign_key="user.id")
+    saved_by_id: str
     created_at: datetime = Field(default_factory=now)
+
+
+architecture_board_versions_db = Collection("architecture_board_versions", ArchitectureBoardVersion)
 
 
 # --- Secrets Vault: end-to-end encrypted secret sharing ---
 #
-# Unlike every other table in this file, these are the first *personal*
+# Unlike every other collection in this file, these are the first *personal*
 # (non-product-scoped) resources -- product_id on VaultSecret is optional
 # organizational metadata only, it grants no access. Access is exclusively
 # per-individual via SecretGrant rows, checked by app/vault_access.py rather
@@ -559,56 +643,69 @@ class ArchitectureBoardVersion(SQLModel, table=True):
 # Every other field here (ciphertext, iv, wrapped_key, public/private key
 # blobs) is an opaque string the backend stores and returns verbatim.
 
-class VaultSecret(SQLModel, table=True):
-    __tablename__ = "vaultsecret"
-    id: str = Field(default_factory=new_id, primary_key=True)
-    owner_id: str = Field(foreign_key="user.id", index=True)
+class VaultSecret(BaseModel):
+    id: str = Field(default_factory=new_id)
+    owner_id: str
     # Organizational label only -- see module docstring above. Not an access grant.
-    product_id: str | None = Field(default=None, foreign_key="product.id", index=True)
+    product_id: str | None = None
     name: str
-    description: str | None = Field(default=None, sa_column=Column(Text))
-    ciphertext: str = Field(sa_column=Column(Text))  # base64 AES-256-GCM ciphertext of the secret value
+    description: str | None = None
+    ciphertext: str  # base64 AES-256-GCM ciphertext of the secret value
     iv: str  # base64, 12 bytes -- the GCM IV used for `ciphertext`
     # The secret's DEK, wrapped (RSA-OAEP) for the platform recovery public
     # key (VaultRecoveryKey below) -- always present, used only by breakglass.
-    recovery_wrapped_key: str = Field(sa_column=Column(Text))
+    recovery_wrapped_key: str
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
 
 
-class SecretGrant(SQLModel, table=True):
-    __table_args__ = (UniqueConstraint("secret_id", "user_id", name="uq_secretgrant_secret_user"),)
-    id: str = Field(default_factory=new_id, primary_key=True)
-    secret_id: str = Field(foreign_key="vaultsecret.id", index=True)
+vault_secrets_db = Collection("vault_secrets", VaultSecret)
+
+
+class SecretGrant(BaseModel):
+    id: str = Field(default_factory=new_id)
+    secret_id: str
     # The grantee -- includes a self-grant row for the owner, so the owner
     # can decrypt from any device without needing owner_id special-cased.
-    user_id: str = Field(foreign_key="user.id", index=True)
-    wrapped_key: str = Field(sa_column=Column(Text))  # base64 RSA-OAEP ciphertext of the DEK, wrapped for user_id
-    granted_by_id: str = Field(foreign_key="user.id")
+    # Uniqueness of (secret_id, user_id) is enforced at the router layer
+    # (grant_access does an upsert-if-exists check) rather than by a DB
+    # constraint, same as everywhere else Firestore replaces Postgres here.
+    user_id: str
+    wrapped_key: str  # base64 RSA-OAEP ciphertext of the DEK, wrapped for user_id
+    granted_by_id: str
     created_at: datetime = Field(default_factory=now)
 
 
-class VaultAuditLog(SQLModel, table=True):
-    id: str = Field(default_factory=new_id, primary_key=True)
-    # Deliberately not a DB foreign key -- audit history should outlive a
+secret_grants_db = Collection("secret_grants", SecretGrant)
+
+
+class VaultAuditLog(BaseModel):
+    id: str = Field(default_factory=new_id)
+    # Deliberately not a foreign key -- audit history should outlive a
     # deleted secret rather than being cascade-deleted or blocking deletion.
-    secret_id: str = Field(index=True)
-    actor_id: str = Field(foreign_key="user.id")
+    secret_id: str
+    actor_id: str
     action: str  # CREATED | GRANTED | REVOKED | VIEWED | ADMIN_BREAKGLASS_VIEWED
-    metadata_: dict | None = Field(default=None, sa_column=Column("metadata", JSON))
-    created_at: datetime = Field(default_factory=now, index=True)
+    metadata_: dict | None = None
+    created_at: datetime = Field(default_factory=now)
 
 
-class VaultRecoveryKey(SQLModel, table=True):
-    # Singleton row (fixed id) -- one platform-wide recovery keypair, used
+vault_audit_log_db = Collection("vault_audit_log", VaultAuditLog)
+
+
+class VaultRecoveryKey(BaseModel):
+    # Singleton doc (fixed id) -- one platform-wide recovery keypair, used
     # only by the admin breakglass-reveal endpoint. This is the one
     # deliberate, confirmed exception to this feature's end-to-end
-    # encryption guarantee -- see app/vault_recovery.py and PRD/plan Known
-    # Limitation #4. Generated once at startup by ensure_vault_recovery_key()
-    # if settings.vault_recovery_master_key is configured.
-    id: str = Field(default="singleton", primary_key=True)
-    public_key: str = Field(sa_column=Column(Text))  # SPKI DER, base64 -- safe to be public
+    # encryption guarantee -- see app/vault_recovery.py. Generated once at
+    # startup by ensure_vault_recovery_key() if
+    # settings.vault_recovery_master_key is configured.
+    id: str = "singleton"
+    public_key: str  # SPKI DER, base64 -- safe to be public
     # PKCS8 DER private key, AES-256-GCM-encrypted with settings.vault_recovery_master_key.
     # Stored as base64(iv) + ":" + base64(ciphertext).
-    encrypted_private_key: str = Field(sa_column=Column(Text))
+    encrypted_private_key: str
     created_at: datetime = Field(default_factory=now)
+
+
+vault_recovery_key_db = Collection("vault_recovery_key", VaultRecoveryKey)

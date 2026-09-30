@@ -172,20 +172,21 @@ The app is split into a Python API and a JS frontend — two deployables, not on
 
 **Backend** (`backend/`):
 - **Framework**: FastAPI, run via Uvicorn
-- **ORM/models**: SQLModel (SQLAlchemy + Pydantic in one model definition) against Postgres, via `psycopg` 3
-- **Migrations**: `SQLModel.metadata.create_all()` at startup for now — the troublefree option while the schema is still moving. Move to Alembic once the schema stabilizes and there's real data to migrate. **Gotcha**: every `(str, Enum)` field (lifecycle stage, statuses, priorities, ...) becomes a native Postgres `ENUM` type, and `create_all()` only creates *missing* types/tables — it never `ALTER`s an existing one. Adding a new member to any of these Python enums (e.g. `LifecycleStage.INFOSEC`) needs a matching `ALTER TYPE ... ADD VALUE IF NOT EXISTS` run at startup or the DB will reject the new value outright. `app/database.py`'s `_sync_lifecycle_stage_enum()` does this for `LifecycleStage`; the same pattern will be needed for any other enum that grows in Phase 2 (e.g. adding a bug status) until Alembic is in place.
-- **Auth**: hand-rolled JWT issuance (`python-jose`), provider-swappable via `AUTH_PROVIDER` exactly as originally planned (`dev-credentials` today — email-only, no password, issues a JWT; `entra-id`/`google` are the same env-var switch later, just not wired yet)
-- **AI**: `AI_PROVIDER` abstraction (`mock` default, swappable to `anthropic`/`openai`/`azure-openai`) — used for §6.9 features only, never load-bearing for core functionality
-- **File storage**: `STORAGE_PROVIDER` abstraction (`local-disk` for dev, `s3` for production)
+- **Data**: Firestore (via the Admin SDK, `firebase-admin`) — a schemaless document store, not Postgres/SQLModel anymore. `app/models.py` defines each collection's document shape as a plain Pydantic model; `app/firestore_db.py`'s `Collection[T]` is the thin generic wrapper (`get`/`set`/`where`/`first`/`all`) every router uses instead of SQL. No migrations to run — adding a field is just adding it to the Pydantic model.
+- **Auth**: Firebase Authentication, Google Sign-In only. The frontend gets an ID token straight from Firebase after `signInWithPopup`; `app/security.py` verifies it server-side (`firebase_admin.auth.verify_id_token`) on every request — no locally-issued JWT anymore. A user's `global_role` (Admin/Member) is set from `FIREBASE_ADMIN_EMAILS` at first sign-in and kept in sync on every login. `User.id` is an app-controlled id decoupled from the Firebase uid (stored separately as `firebase_uid`) specifically so a PM can pre-provision a teammate by email (`POST /api/products/{id}/members`) before that person has ever signed in — see `security.py::_upsert_user`'s "claim a placeholder" logic.
+- **AI**: `AI_PROVIDER` abstraction (`mock` default, swappable to `anthropic`/`gemini`) — used for §6.9 features only, never load-bearing for core functionality
+- **File storage**: `STORAGE_PROVIDER` abstraction (`local-disk` for dev, `s3` for production) — unchanged by the Firestore migration
+- **Secrets Vault**: end-to-end encrypted per-user secret sharing (`app/routers/vault.py`, `app/vault_access.py`, `app/vault_recovery.py`), independent of how a user signs in — the vault's own unlock password is separate from Google Sign-In by design (see `frontend/src/lib/vaultCrypto.ts`)
 
 **Frontend** (`frontend/`):
 - **Framework**: Vite + React 19 + TypeScript, client-side routing via `react-router-dom`
-- **UI**: Tailwind 4, CVA for variants, lucide-react icons, sonner for toasts (same visual system as originally planned, just without the Radix/shadcn primitives library — plain elements styled directly, kept light since the frontend has no server runtime to lean on)
-- **Data**: a thin `fetch` wrapper (`src/lib/api.ts`) attaches the JWT from `localStorage` to every request; no client-side state library yet, plain `useState`/`useEffect` per page until that stops being enough
+- **UI**: Tailwind 4, CVA for variants, lucide-react icons, sonner for toasts
+- **Auth**: `firebase/auth`'s `signInWithPopup` + `GoogleAuthProvider` (`src/lib/firebase.ts`); `src/lib/auth.tsx`'s `AuthProvider` tracks both the signed-in Firebase/Firestore user and the separate Secrets Vault unlock state
+- **Data**: a thin `fetch` wrapper (`src/lib/api.ts`) attaches a fresh Firebase ID token (`auth.currentUser.getIdToken()`, auto-refreshed) to every request; no client-side state library yet, plain `useState`/`useEffect` per page until that stops being enough
 
-**Local dev**: backend runs via `uvicorn app.main:app --reload`, frontend via `npm run dev` (Vite), both talk to a local Postgres. CORS on the backend allows the Vite dev origin.
+**Local dev**: backend runs via `uvicorn app.main:app --reload`, frontend via `npm run dev` (Vite), both talk to a real Firestore instance (no local Firestore emulator wired up yet). CORS on the backend allows the Vite dev origin.
 
-**Production**: `docker-compose.yml` runs three services — `postgres`, `backend` (FastAPI on :8000), and `frontend` (an nginx container serving the built static assets and proxying `/api/*` to `backend`, so the browser only ever talks to one origin). `docker/Dockerfile` (the old single Next.js image) is gone — each app now has its own `Dockerfile` next to its code (`backend/Dockerfile`, `frontend/Dockerfile`).
+**Production**: `docker-compose.yml` runs two services — `backend` (FastAPI on :8000, needs a mounted Firebase service-account key) and `frontend` (an nginx container serving the built static assets and proxying `/api/*` to `backend`, so the browser only ever talks to one origin). `docker/Dockerfile` (the old single Next.js image) is gone — each app now has its own `Dockerfile` next to its code (`backend/Dockerfile`, `frontend/Dockerfile`).
 
 ## 9. Current Build State
 

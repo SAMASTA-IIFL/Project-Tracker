@@ -1,0 +1,29 @@
+rules_version = '2';
+
+// Product Pro reaches Firestore only through the FastAPI backend, which uses
+// the Firebase Admin SDK (backend/app/firestore_db.py). The Admin SDK holds
+// service-account credentials and bypasses these rules entirely, so denying
+// everything here costs the app nothing.
+//
+// Nothing in the browser touches Firestore: frontend/src/lib/firebase.ts
+// initializes firebase/auth only (Google Sign-In), and the React app talks to
+// the API over HTTP with the resulting ID token (frontend/src/lib/api.ts).
+//
+// That makes "deny" the correct rule for every collection rather than a
+// placeholder to tighten later. Authorization for this app lives in
+// backend/app/permissions.py — product membership, global roles, and the
+// Secrets Vault grant checks in backend/app/vault_access.py. Any path a
+// signed-in client could read directly from here would be a way around those
+// checks, not a feature: users, vault_secrets, secret_grants and
+// vault_audit_log in particular are never safe to expose to a client.
+//
+// If a future feature genuinely needs direct client access (e.g. a realtime
+// listener that avoids polling the API), add a narrow `match` for that one
+// collection with an explicit condition. Do not widen this catch-all.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

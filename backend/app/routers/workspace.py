@@ -2,14 +2,11 @@ import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, func, select
 
 from app import ai
 from app.activity import log_activity
-from app.database import get_session
 from app.deps import get_member_product
 from app.models import (
-    BRD,
     ArchitectureBoard,
     ArchitectureBoardVersion,
     BRDStatus,
@@ -20,7 +17,16 @@ from app.models import (
     ProjectRepository,
     TechStackItem,
     User,
+    architecture_board_versions_db,
+    architecture_boards_db,
+    brds_db,
+    budget_line_items_db,
+    hosting_environments_db,
     new_id,
+    products_db,
+    project_repositories_db,
+    tech_stack_items_db,
+    users_db,
 )
 from app.permissions import require_roles
 from app.schemas import (
@@ -68,8 +74,8 @@ def _user_read(user: User) -> UserRead:
 # --- Repositories ---
 
 
-def _repo_to_read(session: Session, repo: ProjectRepository) -> ProjectRepositoryRead:
-    creator = session.get(User, repo.created_by_id)
+def _repo_to_read(repo: ProjectRepository) -> ProjectRepositoryRead:
+    creator = users_db.get(repo.created_by_id)
     return ProjectRepositoryRead(
         id=repo.id, product_id=repo.product_id, label=repo.label, provider=repo.provider,
         url=repo.url, default_branch=repo.default_branch, notes=repo.notes, order=repo.order,
@@ -78,43 +84,38 @@ def _repo_to_read(session: Session, repo: ProjectRepository) -> ProjectRepositor
 
 
 @router.get("/repositories", response_model=list[ProjectRepositoryRead])
-def list_repositories(product_id: str, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
-    get_member_product(product_id, session, user)
-    repos = session.exec(
-        select(ProjectRepository).where(ProjectRepository.product_id == product_id).order_by(ProjectRepository.order)
-    ).all()
-    return [_repo_to_read(session, r) for r in repos]
+def list_repositories(product_id: str, user: User = Depends(get_current_user)):
+    get_member_product(product_id, user)
+    repos = project_repositories_db.where(product_id=product_id, order_by="order")
+    return [_repo_to_read(r) for r in repos]
 
 
 @router.post("/repositories", response_model=ProjectRepositoryRead)
 def create_repository(
     product_id: str, body: ProjectRepositoryCreate,
-    session: Session = Depends(get_session), user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    get_member_product(product_id, session, user)
-    require_roles(session, product_id, user, _EDIT_ROLES)
+    get_member_product(product_id, user)
+    require_roles(product_id, user, _EDIT_ROLES)
 
-    existing_count = session.exec(
-        select(func.count(ProjectRepository.id)).where(ProjectRepository.product_id == product_id)
-    ).one()
-    repo = ProjectRepository(
-        product_id=product_id, label=body.label, provider=body.provider, url=body.url,
-        default_branch=body.default_branch, notes=body.notes, order=existing_count, created_by_id=user.id,
+    existing_count = len(project_repositories_db.where(product_id=product_id))
+    repo = project_repositories_db.set(
+        ProjectRepository(
+            product_id=product_id, label=body.label, provider=body.provider, url=body.url,
+            default_branch=body.default_branch, notes=body.notes, order=existing_count, created_by_id=user.id,
+        )
     )
-    session.add(repo)
-    session.commit()
-    session.refresh(repo)
 
     log_activity(
-        session, product_id=product_id, actor_id=user.id,
+        product_id=product_id, actor_id=user.id,
         event_type="WORKSPACE_REPO_ADDED", ref_type="PROJECT_REPOSITORY", ref_id=repo.id,
         metadata={"label": repo.label},
     )
-    return _repo_to_read(session, repo)
+    return _repo_to_read(repo)
 
 
-def _get_repo_or_404(session: Session, product_id: str, repo_id: str) -> ProjectRepository:
-    repo = session.get(ProjectRepository, repo_id)
+def _get_repo_or_404(product_id: str, repo_id: str) -> ProjectRepository:
+    repo = project_repositories_db.get(repo_id)
     if not repo or repo.product_id != product_id:
         raise HTTPException(status_code=404, detail="Repository not found")
     return repo
@@ -123,38 +124,35 @@ def _get_repo_or_404(session: Session, product_id: str, repo_id: str) -> Project
 @router.patch("/repositories/{repo_id}", response_model=ProjectRepositoryRead)
 def update_repository(
     product_id: str, repo_id: str, body: ProjectRepositoryUpdate,
-    session: Session = Depends(get_session), user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    get_member_product(product_id, session, user)
-    require_roles(session, product_id, user, _EDIT_ROLES)
-    repo = _get_repo_or_404(session, product_id, repo_id)
+    get_member_product(product_id, user)
+    require_roles(product_id, user, _EDIT_ROLES)
+    repo = _get_repo_or_404(product_id, repo_id)
 
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(repo, field, value)
     repo.updated_at = datetime.utcnow()
-    session.add(repo)
-    session.commit()
-    session.refresh(repo)
-    return _repo_to_read(session, repo)
+    project_repositories_db.set(repo)
+    return _repo_to_read(repo)
 
 
 @router.delete("/repositories/{repo_id}", status_code=204)
 def delete_repository(
     product_id: str, repo_id: str,
-    session: Session = Depends(get_session), user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    get_member_product(product_id, session, user)
-    require_roles(session, product_id, user, _EDIT_ROLES)
-    repo = _get_repo_or_404(session, product_id, repo_id)
-    session.delete(repo)
-    session.commit()
+    get_member_product(product_id, user)
+    require_roles(product_id, user, _EDIT_ROLES)
+    repo = _get_repo_or_404(product_id, repo_id)
+    project_repositories_db.delete(repo.id)
 
 
 # --- Tech stack ---
 
 
-def _tech_to_read(session: Session, item: TechStackItem) -> TechStackItemRead:
-    creator = session.get(User, item.created_by_id)
+def _tech_to_read(item: TechStackItem) -> TechStackItemRead:
+    creator = users_db.get(item.created_by_id)
     return TechStackItemRead(
         id=item.id, product_id=item.product_id, category=item.category, name=item.name,
         version=item.version, url=item.url, notes=item.notes, order=item.order,
@@ -163,45 +161,39 @@ def _tech_to_read(session: Session, item: TechStackItem) -> TechStackItemRead:
 
 
 @router.get("/tech-stack", response_model=list[TechStackItemRead])
-def list_tech_stack(product_id: str, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
-    get_member_product(product_id, session, user)
-    items = session.exec(
-        select(TechStackItem).where(TechStackItem.product_id == product_id).order_by(TechStackItem.category, TechStackItem.order)
-    ).all()
-    return [_tech_to_read(session, i) for i in items]
+def list_tech_stack(product_id: str, user: User = Depends(get_current_user)):
+    get_member_product(product_id, user)
+    items = tech_stack_items_db.where(product_id=product_id)
+    items.sort(key=lambda i: (i.category, i.order))
+    return [_tech_to_read(i) for i in items]
 
 
 @router.post("/tech-stack", response_model=TechStackItemRead)
 def create_tech_stack_item(
     product_id: str, body: TechStackItemCreate,
-    session: Session = Depends(get_session), user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    get_member_product(product_id, session, user)
-    require_roles(session, product_id, user, _EDIT_ROLES)
+    get_member_product(product_id, user)
+    require_roles(product_id, user, _EDIT_ROLES)
 
-    existing_count = session.exec(
-        select(func.count(TechStackItem.id)).where(
-            TechStackItem.product_id == product_id, TechStackItem.category == body.category
+    existing_count = len(tech_stack_items_db.where(product_id=product_id, category=body.category))
+    item = tech_stack_items_db.set(
+        TechStackItem(
+            product_id=product_id, category=body.category, name=body.name, version=body.version,
+            url=body.url, notes=body.notes, order=existing_count, created_by_id=user.id,
         )
-    ).one()
-    item = TechStackItem(
-        product_id=product_id, category=body.category, name=body.name, version=body.version,
-        url=body.url, notes=body.notes, order=existing_count, created_by_id=user.id,
     )
-    session.add(item)
-    session.commit()
-    session.refresh(item)
 
     log_activity(
-        session, product_id=product_id, actor_id=user.id,
+        product_id=product_id, actor_id=user.id,
         event_type="WORKSPACE_TECH_ITEM_ADDED", ref_type="TECH_STACK_ITEM", ref_id=item.id,
         metadata={"name": item.name, "category": item.category},
     )
-    return _tech_to_read(session, item)
+    return _tech_to_read(item)
 
 
-def _get_tech_item_or_404(session: Session, product_id: str, item_id: str) -> TechStackItem:
-    item = session.get(TechStackItem, item_id)
+def _get_tech_item_or_404(product_id: str, item_id: str) -> TechStackItem:
+    item = tech_stack_items_db.get(item_id)
     if not item or item.product_id != product_id:
         raise HTTPException(status_code=404, detail="Tech stack item not found")
     return item
@@ -210,38 +202,35 @@ def _get_tech_item_or_404(session: Session, product_id: str, item_id: str) -> Te
 @router.patch("/tech-stack/{item_id}", response_model=TechStackItemRead)
 def update_tech_stack_item(
     product_id: str, item_id: str, body: TechStackItemUpdate,
-    session: Session = Depends(get_session), user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    get_member_product(product_id, session, user)
-    require_roles(session, product_id, user, _EDIT_ROLES)
-    item = _get_tech_item_or_404(session, product_id, item_id)
+    get_member_product(product_id, user)
+    require_roles(product_id, user, _EDIT_ROLES)
+    item = _get_tech_item_or_404(product_id, item_id)
 
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(item, field, value)
     item.updated_at = datetime.utcnow()
-    session.add(item)
-    session.commit()
-    session.refresh(item)
-    return _tech_to_read(session, item)
+    tech_stack_items_db.set(item)
+    return _tech_to_read(item)
 
 
 @router.delete("/tech-stack/{item_id}", status_code=204)
 def delete_tech_stack_item(
     product_id: str, item_id: str,
-    session: Session = Depends(get_session), user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    get_member_product(product_id, session, user)
-    require_roles(session, product_id, user, _EDIT_ROLES)
-    item = _get_tech_item_or_404(session, product_id, item_id)
-    session.delete(item)
-    session.commit()
+    get_member_product(product_id, user)
+    require_roles(product_id, user, _EDIT_ROLES)
+    item = _get_tech_item_or_404(product_id, item_id)
+    tech_stack_items_db.delete(item.id)
 
 
 # --- Hosting environments ---
 
 
-def _hosting_to_read(session: Session, env: HostingEnvironment) -> HostingEnvironmentRead:
-    creator = session.get(User, env.created_by_id)
+def _hosting_to_read(env: HostingEnvironment) -> HostingEnvironmentRead:
+    creator = users_db.get(env.created_by_id)
     return HostingEnvironmentRead(
         id=env.id, product_id=env.product_id, name=env.name, provider=env.provider,
         url=env.url, region=env.region, notes=env.notes, order=env.order,
@@ -250,43 +239,38 @@ def _hosting_to_read(session: Session, env: HostingEnvironment) -> HostingEnviro
 
 
 @router.get("/hosting", response_model=list[HostingEnvironmentRead])
-def list_hosting(product_id: str, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
-    get_member_product(product_id, session, user)
-    envs = session.exec(
-        select(HostingEnvironment).where(HostingEnvironment.product_id == product_id).order_by(HostingEnvironment.order)
-    ).all()
-    return [_hosting_to_read(session, e) for e in envs]
+def list_hosting(product_id: str, user: User = Depends(get_current_user)):
+    get_member_product(product_id, user)
+    envs = hosting_environments_db.where(product_id=product_id, order_by="order")
+    return [_hosting_to_read(e) for e in envs]
 
 
 @router.post("/hosting", response_model=HostingEnvironmentRead)
 def create_hosting(
     product_id: str, body: HostingEnvironmentCreate,
-    session: Session = Depends(get_session), user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    get_member_product(product_id, session, user)
-    require_roles(session, product_id, user, _EDIT_ROLES)
+    get_member_product(product_id, user)
+    require_roles(product_id, user, _EDIT_ROLES)
 
-    existing_count = session.exec(
-        select(func.count(HostingEnvironment.id)).where(HostingEnvironment.product_id == product_id)
-    ).one()
-    env = HostingEnvironment(
-        product_id=product_id, name=body.name, provider=body.provider, url=body.url,
-        region=body.region, notes=body.notes, order=existing_count, created_by_id=user.id,
+    existing_count = len(hosting_environments_db.where(product_id=product_id))
+    env = hosting_environments_db.set(
+        HostingEnvironment(
+            product_id=product_id, name=body.name, provider=body.provider, url=body.url,
+            region=body.region, notes=body.notes, order=existing_count, created_by_id=user.id,
+        )
     )
-    session.add(env)
-    session.commit()
-    session.refresh(env)
 
     log_activity(
-        session, product_id=product_id, actor_id=user.id,
+        product_id=product_id, actor_id=user.id,
         event_type="WORKSPACE_HOSTING_ADDED", ref_type="HOSTING_ENVIRONMENT", ref_id=env.id,
         metadata={"name": env.name},
     )
-    return _hosting_to_read(session, env)
+    return _hosting_to_read(env)
 
 
-def _get_hosting_or_404(session: Session, product_id: str, env_id: str) -> HostingEnvironment:
-    env = session.get(HostingEnvironment, env_id)
+def _get_hosting_or_404(product_id: str, env_id: str) -> HostingEnvironment:
+    env = hosting_environments_db.get(env_id)
     if not env or env.product_id != product_id:
         raise HTTPException(status_code=404, detail="Hosting environment not found")
     return env
@@ -295,38 +279,35 @@ def _get_hosting_or_404(session: Session, product_id: str, env_id: str) -> Hosti
 @router.patch("/hosting/{env_id}", response_model=HostingEnvironmentRead)
 def update_hosting(
     product_id: str, env_id: str, body: HostingEnvironmentUpdate,
-    session: Session = Depends(get_session), user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    get_member_product(product_id, session, user)
-    require_roles(session, product_id, user, _EDIT_ROLES)
-    env = _get_hosting_or_404(session, product_id, env_id)
+    get_member_product(product_id, user)
+    require_roles(product_id, user, _EDIT_ROLES)
+    env = _get_hosting_or_404(product_id, env_id)
 
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(env, field, value)
     env.updated_at = datetime.utcnow()
-    session.add(env)
-    session.commit()
-    session.refresh(env)
-    return _hosting_to_read(session, env)
+    hosting_environments_db.set(env)
+    return _hosting_to_read(env)
 
 
 @router.delete("/hosting/{env_id}", status_code=204)
 def delete_hosting(
     product_id: str, env_id: str,
-    session: Session = Depends(get_session), user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    get_member_product(product_id, session, user)
-    require_roles(session, product_id, user, _EDIT_ROLES)
-    env = _get_hosting_or_404(session, product_id, env_id)
-    session.delete(env)
-    session.commit()
+    get_member_product(product_id, user)
+    require_roles(product_id, user, _EDIT_ROLES)
+    env = _get_hosting_or_404(product_id, env_id)
+    hosting_environments_db.delete(env.id)
 
 
 # --- Budget ---
 
 
-def _budget_to_read(session: Session, item: BudgetLineItem) -> BudgetLineItemRead:
-    creator = session.get(User, item.created_by_id)
+def _budget_to_read(item: BudgetLineItem) -> BudgetLineItemRead:
+    creator = users_db.get(item.created_by_id)
     return BudgetLineItemRead(
         id=item.id, product_id=item.product_id, category=item.category, name=item.name,
         planned_amount=item.planned_amount, actual_amount=item.actual_amount, currency=item.currency,
@@ -336,18 +317,16 @@ def _budget_to_read(session: Session, item: BudgetLineItem) -> BudgetLineItemRea
 
 
 @router.get("/budget", response_model=list[BudgetLineItemRead])
-def list_budget(product_id: str, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
-    get_member_product(product_id, session, user)
-    items = session.exec(
-        select(BudgetLineItem).where(BudgetLineItem.product_id == product_id).order_by(BudgetLineItem.created_at)
-    ).all()
-    return [_budget_to_read(session, i) for i in items]
+def list_budget(product_id: str, user: User = Depends(get_current_user)):
+    get_member_product(product_id, user)
+    items = budget_line_items_db.where(product_id=product_id, order_by="created_at")
+    return [_budget_to_read(i) for i in items]
 
 
 @router.get("/budget/summary", response_model=BudgetSummaryRead)
-def budget_summary(product_id: str, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
-    product = get_member_product(product_id, session, user)
-    items = session.exec(select(BudgetLineItem).where(BudgetLineItem.product_id == product_id)).all()
+def budget_summary(product_id: str, user: User = Depends(get_current_user)):
+    product = get_member_product(product_id, user)
+    items = budget_line_items_db.where(product_id=product_id)
 
     totals_by_category: dict[BudgetCategory, dict[str, float]] = {}
     for item in items:
@@ -369,30 +348,29 @@ def budget_summary(product_id: str, session: Session = Depends(get_session), use
 @router.post("/budget", response_model=BudgetLineItemRead)
 def create_budget_item(
     product_id: str, body: BudgetLineItemCreate,
-    session: Session = Depends(get_session), user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    get_member_product(product_id, session, user)
-    require_roles(session, product_id, user, _BUDGET_EDIT_ROLES)
+    get_member_product(product_id, user)
+    require_roles(product_id, user, _BUDGET_EDIT_ROLES)
 
-    item = BudgetLineItem(
-        product_id=product_id, category=body.category, name=body.name, planned_amount=body.planned_amount,
-        actual_amount=body.actual_amount, currency=body.currency, period=body.period, notes=body.notes,
-        created_by_id=user.id,
+    item = budget_line_items_db.set(
+        BudgetLineItem(
+            product_id=product_id, category=body.category, name=body.name, planned_amount=body.planned_amount,
+            actual_amount=body.actual_amount, currency=body.currency, period=body.period, notes=body.notes,
+            created_by_id=user.id,
+        )
     )
-    session.add(item)
-    session.commit()
-    session.refresh(item)
 
     log_activity(
-        session, product_id=product_id, actor_id=user.id,
+        product_id=product_id, actor_id=user.id,
         event_type="BUDGET_LINE_ITEM_ADDED", ref_type="BUDGET_LINE_ITEM", ref_id=item.id,
         metadata={"name": item.name, "category": item.category, "planned_amount": item.planned_amount},
     )
-    return _budget_to_read(session, item)
+    return _budget_to_read(item)
 
 
-def _get_budget_item_or_404(session: Session, product_id: str, item_id: str) -> BudgetLineItem:
-    item = session.get(BudgetLineItem, item_id)
+def _get_budget_item_or_404(product_id: str, item_id: str) -> BudgetLineItem:
+    item = budget_line_items_db.get(item_id)
     if not item or item.product_id != product_id:
         raise HTTPException(status_code=404, detail="Budget line item not found")
     return item
@@ -401,64 +379,55 @@ def _get_budget_item_or_404(session: Session, product_id: str, item_id: str) -> 
 @router.patch("/budget/{item_id}", response_model=BudgetLineItemRead)
 def update_budget_item(
     product_id: str, item_id: str, body: BudgetLineItemUpdate,
-    session: Session = Depends(get_session), user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    get_member_product(product_id, session, user)
-    require_roles(session, product_id, user, _BUDGET_EDIT_ROLES)
-    item = _get_budget_item_or_404(session, product_id, item_id)
+    get_member_product(product_id, user)
+    require_roles(product_id, user, _BUDGET_EDIT_ROLES)
+    item = _get_budget_item_or_404(product_id, item_id)
 
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(item, field, value)
     item.updated_at = datetime.utcnow()
-    session.add(item)
-    session.commit()
-    session.refresh(item)
-    return _budget_to_read(session, item)
+    budget_line_items_db.set(item)
+    return _budget_to_read(item)
 
 
 @router.delete("/budget/{item_id}", status_code=204)
 def delete_budget_item(
     product_id: str, item_id: str,
-    session: Session = Depends(get_session), user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    get_member_product(product_id, session, user)
-    require_roles(session, product_id, user, _BUDGET_EDIT_ROLES)
-    item = _get_budget_item_or_404(session, product_id, item_id)
-    session.delete(item)
-    session.commit()
+    get_member_product(product_id, user)
+    require_roles(product_id, user, _BUDGET_EDIT_ROLES)
+    item = _get_budget_item_or_404(product_id, item_id)
+    budget_line_items_db.delete(item.id)
 
 
 @router.patch("/budget-cap", response_model=ProductRead)
 def update_budget_cap(
     product_id: str, body: BudgetCapUpdate,
-    session: Session = Depends(get_session), user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    product = get_member_product(product_id, session, user)
-    require_roles(session, product_id, user, _BUDGET_EDIT_ROLES)
+    product = get_member_product(product_id, user)
+    require_roles(product_id, user, _BUDGET_EDIT_ROLES)
 
     product.budget_cap = body.budget_cap
-    session.add(product)
-    session.commit()
-    session.refresh(product)
+    products_db.set(product)
     return product
 
 
 # --- Architecture board ---
 
 
-def _get_or_create_board(session: Session, product_id: str, user: User) -> ArchitectureBoard:
-    board = session.exec(select(ArchitectureBoard).where(ArchitectureBoard.product_id == product_id)).first()
+def _get_or_create_board(product_id: str, user: User) -> ArchitectureBoard:
+    board = architecture_boards_db.first(product_id=product_id)
     if board:
         return board
-    board = ArchitectureBoard(product_id=product_id, updated_by_id=user.id)
-    session.add(board)
-    session.commit()
-    session.refresh(board)
-    return board
+    return architecture_boards_db.set(ArchitectureBoard(product_id=product_id, updated_by_id=user.id))
 
 
-def _board_to_read(session: Session, board: ArchitectureBoard) -> ArchitectureBoardRead:
-    updater = session.get(User, board.updated_by_id)
+def _board_to_read(board: ArchitectureBoard) -> ArchitectureBoardRead:
+    updater = users_db.get(board.updated_by_id)
     return ArchitectureBoardRead(
         id=board.id, product_id=board.product_id, graph_json=board.graph_json,
         updated_by=_user_read(updater), created_at=board.created_at, updated_at=board.updated_at,
@@ -466,41 +435,35 @@ def _board_to_read(session: Session, board: ArchitectureBoard) -> ArchitectureBo
 
 
 @router.get("/board", response_model=ArchitectureBoardRead)
-def get_board(product_id: str, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
-    get_member_product(product_id, session, user)
-    board = _get_or_create_board(session, product_id, user)
-    return _board_to_read(session, board)
+def get_board(product_id: str, user: User = Depends(get_current_user)):
+    get_member_product(product_id, user)
+    board = _get_or_create_board(product_id, user)
+    return _board_to_read(board)
 
 
 @router.patch("/board", response_model=ArchitectureBoardRead)
 def update_board(
     product_id: str, body: ArchitectureBoardUpdate,
-    session: Session = Depends(get_session), user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    get_member_product(product_id, session, user)
-    require_roles(session, product_id, user, _EDIT_ROLES)
-    board = _get_or_create_board(session, product_id, user)
+    get_member_product(product_id, user)
+    require_roles(product_id, user, _EDIT_ROLES)
+    board = _get_or_create_board(product_id, user)
 
     board.graph_json = body.graph_json
     board.updated_by_id = user.id
     board.updated_at = datetime.utcnow()
-    session.add(board)
-    session.commit()
-    session.refresh(board)
-    return _board_to_read(session, board)
+    architecture_boards_db.set(board)
+    return _board_to_read(board)
 
 
 @router.get("/board/versions", response_model=list[ArchitectureBoardVersionRead])
-def list_board_versions(product_id: str, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
-    get_member_product(product_id, session, user)
-    versions = session.exec(
-        select(ArchitectureBoardVersion)
-        .where(ArchitectureBoardVersion.product_id == product_id)
-        .order_by(ArchitectureBoardVersion.version.desc())
-    ).all()
+def list_board_versions(product_id: str, user: User = Depends(get_current_user)):
+    get_member_product(product_id, user)
+    versions = architecture_board_versions_db.where(product_id=product_id, order_by="version", desc=True)
     result = []
     for v in versions:
-        saver = session.get(User, v.saved_by_id)
+        saver = users_db.get(v.saved_by_id)
         result.append(
             ArchitectureBoardVersionRead(
                 id=v.id, product_id=v.product_id, version=v.version, graph_json=v.graph_json,
@@ -513,27 +476,24 @@ def list_board_versions(product_id: str, session: Session = Depends(get_session)
 @router.post("/board/versions", response_model=ArchitectureBoardVersionRead)
 def create_board_version(
     product_id: str, body: ArchitectureBoardVersionCreate,
-    session: Session = Depends(get_session), user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    get_member_product(product_id, session, user)
-    require_roles(session, product_id, user, _EDIT_ROLES)
-    board = _get_or_create_board(session, product_id, user)
+    get_member_product(product_id, user)
+    require_roles(product_id, user, _EDIT_ROLES)
+    board = _get_or_create_board(product_id, user)
 
-    latest = session.exec(
-        select(func.max(ArchitectureBoardVersion.version)).where(ArchitectureBoardVersion.product_id == product_id)
-    ).one()
-    next_version = (latest or 0) + 1
+    existing_versions = architecture_board_versions_db.where(product_id=product_id)
+    next_version = (max((v.version for v in existing_versions), default=0)) + 1
 
-    version = ArchitectureBoardVersion(
-        product_id=product_id, version=next_version, graph_json=board.graph_json,
-        label=body.label, saved_by_id=user.id,
+    version = architecture_board_versions_db.set(
+        ArchitectureBoardVersion(
+            product_id=product_id, version=next_version, graph_json=board.graph_json,
+            label=body.label, saved_by_id=user.id,
+        )
     )
-    session.add(version)
-    session.commit()
-    session.refresh(version)
 
     log_activity(
-        session, product_id=product_id, actor_id=user.id,
+        product_id=product_id, actor_id=user.id,
         event_type="BOARD_VERSION_SAVED", ref_type="ARCHITECTURE_BOARD_VERSION", ref_id=version.id,
         metadata={"version": next_version},
     )
@@ -617,14 +577,14 @@ def _layout_graph(suggestion: ArchitectureSuggestion) -> dict:
 @router.post("/board/generate", response_model=BoardGenerateResponse)
 def generate_board(
     product_id: str, body: BoardGenerateRequest,
-    session: Session = Depends(get_session), user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    get_member_product(product_id, session, user)
-    require_roles(session, product_id, user, _EDIT_ROLES)
+    get_member_product(product_id, user)
+    require_roles(product_id, user, _EDIT_ROLES)
 
     brd_context = None
     if body.use_brd:
-        brds = session.exec(select(BRD).where(BRD.product_id == product_id)).all()
+        brds = brds_db.where(product_id=product_id)
         if brds:
             latest = max(brds, key=lambda b: b.version)
             if latest.status == BRDStatus.APPROVED and latest.content:

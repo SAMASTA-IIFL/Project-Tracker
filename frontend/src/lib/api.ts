@@ -1,3 +1,5 @@
+import { auth } from "@/lib/firebase";
+
 const API_URL = import.meta.env.VITE_API_URL as string;
 
 export class ApiError extends Error {
@@ -9,7 +11,10 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const token = localStorage.getItem("token");
+  // Firebase ID tokens expire hourly — getIdToken() transparently refreshes
+  // when needed, so every request always carries a currently-valid token
+  // rather than one cached at sign-in time (see lib/auth.tsx).
+  const token = await auth.currentUser?.getIdToken();
   const isFormData = options.body instanceof FormData;
 
   const res = await fetch(`${API_URL}${path}`, {

@@ -1,0 +1,19 @@
+rules_version = '2';
+
+// Firebase Cloud Storage is not used by Product Pro. Attachments go through
+// the backend's own storage layer, selected by STORAGE_PROVIDER: "local-disk"
+// (backend/.uploads) or "s3" — see backend/app/config.py. Uploads and
+// downloads are served by the API, which applies the permission checks in
+// backend/app/permissions.py before handing back a file.
+//
+// The bucket exists only because creating a Firebase project provisions one,
+// and VITE_FIREBASE_STORAGE_BUCKET is carried in the web config for
+// completeness (frontend/src/lib/firebase.ts never reads it). Deny-all keeps
+// that unused, unmonitored bucket from becoming an open file host.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,30 +1,32 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { api, ApiError } from "@/lib/api";
+import { onAuthStateChanged, signInWithPopup, signOut as firebaseSignOut } from "firebase/auth";
+import { auth, googleProvider } from "@/lib/firebase";
+import { api } from "@/lib/api";
+import {
+  exportPublicKey,
+  generateKeyPair,
+  unwrapPrivateKey,
+  wrapPrivateKey,
+  type WrappedPrivateKeyBlob,
+} from "@/lib/vaultCrypto";
 import type { User } from "@/lib/types";
-import { exportPublicKey, generateKeyPair, unwrapPrivateKey, wrapPrivateKey, type WrappedPrivateKeyBlob } from "@/lib/vaultCrypto";
-
-type TokenResponse = { access_token: string; user: User };
-type VaultKeypairRead = { public_key: string; wrapped_private_key: string };
 
 type AuthContextValue = {
   user: User | null;
   loading: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
-  signOut: () => void;
-  // Secrets Vault (see lib/vaultCrypto.ts). vaultReady is null while
-  // unknown/loading, false if this user has never set up a vault, true once
-  // key material exists server-side. vaultKey is the *unwrapped* private
-  // key — held only in memory for this tab/session, never persisted
-  // anywhere, so a page refresh always requires unlockVault() again. A
-  // normal sign-in opportunistically unlocks it using the password just
-  // entered (discarded immediately after); this is a deliberate trade-off,
-  // not an oversight — see the vault plan's Known Limitations.
+  signIn: () => Promise<void>;
+  signOut: () => Promise<void>;
+
+  // Secrets Vault unlock state — independent of sign-in (see Vault.tsx). The
+  // vault's own password is never Firebase's/Google's; it only ever exists
+  // client-side to derive the key that wraps the user's vault private key
+  // (see lib/vaultCrypto.ts). null = not checked yet, false = no vault set
+  // up, true = vault exists (may still need unlockVault() this session).
   vaultReady: boolean | null;
-  vaultPublicKey: string | null;
   vaultKey: CryptoKey | null;
+  vaultPublicKey: string | null;
   setupVault: (password: string) => Promise<void>;
   unlockVault: (password: string) => Promise<void>;
-  lockVault: () => void;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -32,115 +34,89 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+
   const [vaultReady, setVaultReady] = useState<boolean | null>(null);
-  const [vaultPublicKey, setVaultPublicKey] = useState<string | null>(null);
   const [vaultKey, setVaultKey] = useState<CryptoKey | null>(null);
+  const [vaultPublicKey, setVaultPublicKey] = useState<string | null>(null);
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      setLoading(false);
+    // Restores the session on page load/refresh — Firebase persists the
+    // signed-in Google account in the browser and replays it here.
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (!firebaseUser) {
+        setUser(null);
+        setLoading(false);
+        return;
+      }
+      try {
+        setUser(await api.get<User>("/api/auth/me"));
+      } catch {
+        setUser(null);
+      } finally {
+        setLoading(false);
+      }
+    });
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    // A fresh sign-in (or reload) always starts with the vault locked —
+    // the unwrapped private key never persists across sessions/reloads,
+    // by design (see vaultCrypto.ts).
+    setVaultKey(null);
+    if (!user) {
+      setVaultReady(null);
+      setVaultPublicKey(null);
       return;
     }
     api
-      .get<User>("/api/auth/me")
-      .then(async (u) => {
-        setUser(u);
-        await refreshVaultReady();
+      .get<{ public_key: string; wrapped_private_key: string }>("/api/vault/keypair")
+      .then((res) => {
+        setVaultReady(true);
+        setVaultPublicKey(res.public_key);
       })
-      .catch(() => localStorage.removeItem("token"))
-      .finally(() => setLoading(false));
-  }, []);
-
-  async function refreshVaultReady() {
-    try {
-      const keypair = await api.get<VaultKeypairRead>("/api/vault/keypair");
-      setVaultReady(true);
-      setVaultPublicKey(keypair.public_key);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 404) {
+      .catch(() => {
         setVaultReady(false);
         setVaultPublicKey(null);
-      }
-      // any other error (network, transient) — leave state as-is; the Vault page can retry.
-    }
+      });
+  }, [user?.id]);
+
+  async function signIn() {
+    await signInWithPopup(auth, googleProvider);
+    // /api/auth/me both verifies the new ID token and upserts the matching
+    // Firestore user record — see backend/app/routers/auth.py.
+    setUser(await api.get<User>("/api/auth/me"));
   }
 
-  async function signIn(email: string, password: string) {
-    const res = await api.post<TokenResponse>("/api/auth/dev-login", { email, password });
-    localStorage.setItem("token", res.access_token);
-    setUser(res.user);
-
-    // Opportunistic vault unlock using the password just entered — never
-    // persisted, only held in this function's closure. Swallowed on any
-    // failure (vault not set up yet, or a setup-time password that's
-    // diverged from the login password) so a vault problem never blocks a
-    // normal sign-in.
-    try {
-      const keypair = await api.get<VaultKeypairRead>("/api/vault/keypair");
-      setVaultReady(true);
-      setVaultPublicKey(keypair.public_key);
-      const blob: WrappedPrivateKeyBlob = JSON.parse(keypair.wrapped_private_key);
-      const privateKey = await unwrapPrivateKey(blob, password);
-      setVaultKey(privateKey);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 404) {
-        setVaultReady(false);
-        setVaultPublicKey(null);
-      }
-      setVaultKey(null);
-    }
-  }
-
-  function signOut() {
-    localStorage.removeItem("token");
+  async function signOut() {
+    await firebaseSignOut(auth);
     setUser(null);
-    setVaultReady(null);
-    setVaultPublicKey(null);
-    setVaultKey(null);
   }
 
   async function setupVault(password: string) {
     const keyPair = await generateKeyPair();
     const publicKeyB64 = await exportPublicKey(keyPair.publicKey);
-    const wrapped = await wrapPrivateKey(keyPair.privateKey, password);
-    await api.post<VaultKeypairRead>("/api/vault/keypair", {
+    const wrappedBlob = await wrapPrivateKey(keyPair.privateKey, password);
+    await api.post("/api/vault/keypair", {
       public_key: publicKeyB64,
-      wrapped_private_key: JSON.stringify(wrapped),
+      wrapped_private_key: JSON.stringify(wrappedBlob),
     });
-    setVaultReady(true);
     setVaultPublicKey(publicKeyB64);
     setVaultKey(keyPair.privateKey);
+    setVaultReady(true);
   }
 
-  // Throws on a wrong password (propagated from unwrapPrivateKey) — the
-  // caller (Vault.tsx) is responsible for showing that as a clear error.
   async function unlockVault(password: string) {
-    const keypair = await api.get<VaultKeypairRead>("/api/vault/keypair");
-    const blob: WrappedPrivateKeyBlob = JSON.parse(keypair.wrapped_private_key);
-    const privateKey = await unwrapPrivateKey(blob, password);
-    setVaultPublicKey(keypair.public_key);
-    setVaultKey(privateKey);
-  }
-
-  function lockVault() {
-    setVaultKey(null);
+    const res = await api.get<{ public_key: string; wrapped_private_key: string }>("/api/vault/keypair");
+    const blob = JSON.parse(res.wrapped_private_key) as WrappedPrivateKeyBlob;
+    const key = await unwrapPrivateKey(blob, password); // throws on wrong password
+    setVaultKey(key);
+    setVaultPublicKey(res.public_key);
   }
 
   return (
     <AuthContext.Provider
-      value={{
-        user,
-        loading,
-        signIn,
-        signOut,
-        vaultReady,
-        vaultPublicKey,
-        vaultKey,
-        setupVault,
-        unlockVault,
-        lockVault,
-      }}
+      value={{ user, loading, signIn, signOut, vaultReady, vaultKey, vaultPublicKey, setupVault, unlockVault }}
     >
       {children}
     </AuthContext.Provider>

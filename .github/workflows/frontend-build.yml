@@ -1,0 +1,66 @@
+name: Frontend build
+
+# Vite inlines `import.meta.env.VITE_*` into the bundle at build time — there
+# is no runtime lookup once `dist/` exists. So the Firebase web config has to
+# be present *here*, during the build, and it comes from repository secrets
+# rather than a checked-in .env (frontend/.env stays gitignored and local-only).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      # Same-origin in the container image: nginx proxies /api/* to the backend.
+      VITE_API_URL: ""
+      VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+      VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+      VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+      VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
+      VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+      VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Fail loudly and early. Without this a missing secret still produces a
+      # green build whose bundle has `apiKey: undefined`, and the only symptom
+      # is `auth/invalid-api-key` in the browser at sign-in.
+      - name: Verify Firebase config secrets are set
+        run: |
+          missing=()
+          for name in VITE_FIREBASE_API_KEY VITE_FIREBASE_AUTH_DOMAIN VITE_FIREBASE_PROJECT_ID \
+                      VITE_FIREBASE_STORAGE_BUCKET VITE_FIREBASE_MESSAGING_SENDER_ID VITE_FIREBASE_APP_ID; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error::Missing repository secret(s): ${missing[*]}"
+            echo "Add them under Settings > Secrets and variables > Actions, or with:"
+            echo "  gh secret set <NAME> --repo ${{ github.repository }}"
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 7
